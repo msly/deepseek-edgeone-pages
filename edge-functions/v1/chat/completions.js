@@ -151,9 +151,7 @@ async function handleStreamResponse(upstreamResponse, model) {
           const { done, value } = await reader.read();
           
           if (done) {
-            // 发送结束标记
-            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
-            controller.close();
+            // 流结束时不发送额外标记，让数据块中的[DONE]处理
             break;
           }
 
@@ -167,8 +165,12 @@ async function handleStreamResponse(upstreamResponse, model) {
             
             const data = trimmed.slice(6);
             if (data === '[DONE]') {
-              controller.enqueue(encoder.encode('data: [DONE]\n\n'));
-              continue;
+              // 只发送一次结束标记，然后关闭流
+              if (!controller.done) {
+                controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+                controller.close();
+              }
+              return;
             }
 
             try {
