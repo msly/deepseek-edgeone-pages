@@ -273,22 +273,43 @@ export default async function onRequest(context) {
     if (responseText.startsWith('data: ')) {
       // 如果上游返回了流式格式，需要解析为JSON
       const lines = responseText.split('\n');
-      let lastData = null;
+      let accumulatedContent = '';
+      let finalData = null;
       
       for (const line of lines) {
         const trimmed = line.trim();
         if (trimmed.startsWith('data: ') && !trimmed.includes('[DONE]')) {
           try {
             const data = JSON.parse(trimmed.slice(6));
-            lastData = data;
+            finalData = data;
+            
+            // 累积内容
+            if (data.choices?.[0]?.delta?.content) {
+              accumulatedContent += data.choices[0].delta.content;
+            } else if (data.choices?.[0]?.message?.content) {
+              accumulatedContent = data.choices[0].message.content;
+            }
           } catch (e) {
             console.error('Parse error:', e);
           }
         }
       }
       
-      if (lastData) {
-        const transformedData = transformToOpenAIFormat(lastData, body.model);
+      if (finalData) {
+        // 构建完整的响应数据
+        const completeData = {
+          ...finalData,
+          choices: [{
+            ...finalData.choices?.[0],
+            message: {
+              role: 'assistant',
+              content: accumulatedContent
+            },
+            delta: undefined // 移除delta字段
+          }]
+        };
+        
+        const transformedData = transformToOpenAIFormat(completeData, body.model);
         return new Response(JSON.stringify(transformedData), {
           headers: { "Content-Type": "application/json", ...makeCORSHeaders() }
         });
