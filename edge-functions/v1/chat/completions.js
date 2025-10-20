@@ -132,19 +132,96 @@ function generateId() {
 }
 
 /**
- * 处理流式响应（EdgeOne Pages 官方模式）
+ * 处理流式响应（简化版 - 不使用 waitUntil）
  * @param {Response} upstreamResponse - 上游响应
  * @param {string} model - 模型名称
- * @param {Object} context - EdgeOne Pages 上下文
  * @returns {Response} 流式响应
  */
-function handleStreamResponse(upstreamResponse, model, context) {
+function handleStreamResponse(upstreamResponse, model) {
   const responseStream = new TransformStream();
   const writer = responseStream.writable.getWriter();
   const encoder = new TextEncoder();
   
-  // 创建响应对象，立即返回
-  const response = new Response(responseStream.readable, {
+  // 立即启动异步处理（不使用 waitUntil）
+  (async () => {
+    const reader = upstreamResponse.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        
+        if (done) {
+          // 处理缓冲区中剩余的数据
+          if (buffer.trim()) {
+            const trimmed = buffer.trim();
+            if (trimmed.startsWith('data: ')) {
+              const data = trimmed.slice(6);
+              if (data !== '[DONE]') {
+                try {
+                  const parsed = JSON.parse(data);
+                  const transformed = transformStreamChunk(parsed, model);
+                  await writer.write(encoder.encode(`data: ${JSON.stringify(transformed)}\n\n`));
+                } catch (e) {
+                  console.error('Parse error:', e);
+                }
+              }
+            }
+          }
+          break;
+        }
+        
+        // 解码并添加到缓冲区
+        buffer += decoder.decode(value, { stream: true });
+        
+        // 按行分割
+        const lines = buffer.split('\n');
+        
+        // 保留最后一个不完整的行
+        buffer = lines.pop() || '';
+        
+        // 处理完整的行
+        for (const line of lines) {
+          const trimmed = line.trim();
+          
+          // 跳过空行
+          if (!trimmed) continue;
+          
+          // 处理非 SSE 数据行
+          if (!trimmed.startsWith('data: ')) continue;
+          
+          const data = trimmed.slice(6);
+          
+          // 处理 [DONE] 标记
+          if (data === '[DONE]') {
+            await writer.write(encoder.encode('data: [DONE]\n\n'));
+            continue;
+          }
+
+          // 解析并转换 JSON 数据
+          try {
+            const parsed = JSON.parse(data);
+            const transformed = transformStreamChunk(parsed, model);
+            await writer.write(encoder.encode(`data: ${JSON.stringify(transformed)}\n\n`));
+          } catch (e) {
+            console.error('Parse error for data:', data, e);
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Stream processing error:', error);
+    } finally {
+      try {
+        await writer.close();
+      } catch (e) {
+        // Writer may already be closed
+      }
+    }
+  })();
+  
+  // 立即返回响应
+  return new Response(responseStream.readable, {
     headers: {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
@@ -152,84 +229,6 @@ function handleStreamResponse(upstreamResponse, model, context) {
       ...makeCORSHeaders()
     }
   });
-  
-  // 使用 waitUntil 在后台处理流
-  context.waitUntil(
-    (async () => {
-      const reader = upstreamResponse.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          
-          if (done) {
-            // 处理缓冲区中剩余的数据
-            if (buffer.trim()) {
-              const trimmed = buffer.trim();
-              if (trimmed.startsWith('data: ')) {
-                const data = trimmed.slice(6);
-                if (data !== '[DONE]') {
-                  try {
-                    const parsed = JSON.parse(data);
-                    const transformed = transformStreamChunk(parsed, model);
-                    await writer.write(encoder.encode(`data: ${JSON.stringify(transformed)}\n\n`));
-                  } catch (e) {
-                    console.error('Parse error:', e);
-                  }
-                }
-              }
-            }
-            break;
-          }
-          
-          // 解码并添加到缓冲区
-          buffer += decoder.decode(value, { stream: true });
-          
-          // 按行分割
-          const lines = buffer.split('\n');
-          
-          // 保留最后一个不完整的行
-          buffer = lines.pop() || '';
-          
-          // 处理完整的行
-          for (const line of lines) {
-            const trimmed = line.trim();
-            
-            // 跳过空行
-            if (!trimmed) continue;
-            
-            // 处理非 SSE 数据行
-            if (!trimmed.startsWith('data: ')) continue;
-            
-            const data = trimmed.slice(6);
-            
-            // 处理 [DONE] 标记
-            if (data === '[DONE]') {
-              await writer.write(encoder.encode('data: [DONE]\n\n'));
-              continue;
-            }
-
-            // 解析并转换 JSON 数据
-            try {
-              const parsed = JSON.parse(data);
-              const transformed = transformStreamChunk(parsed, model);
-              await writer.write(encoder.encode(`data: ${JSON.stringify(transformed)}\n\n`));
-            } catch (e) {
-              console.error('Parse error for data:', data, e);
-            }
-          }
-        }
-      } catch (error) {
-        console.error('Stream processing error:', error);
-      } finally {
-        await writer.close();
-      }
-    })()
-  );
-  
-  return response;
 }
 
 /**
@@ -325,8 +324,8 @@ export default async function onRequest(context) {
         return errorResponse(`Upstream API error: ${errorText}`, upstreamResponse.status, "api_error");
       }
 
-      // 立即返回流式响应，传入 context
-      return handleStreamResponse(upstreamResponse, body.model, context);
+      // 立即返回流式响应
+      return handleStreamResponse(upstreamResponse, body.model);
     }
 
     // 处理非流式响应
