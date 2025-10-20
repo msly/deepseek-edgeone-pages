@@ -5,7 +5,7 @@
 
 // 配置
 const CONFIG = {
-  UPSTREAM_API: 'https://ai-chatbot-starter.edgeone.app/ai',
+  UPSTREAM_API: 'https://ai-chatbot-starter.edgeone.app/api/ai',
   MODEL_MAPPING: {
     'deepseek-reasoner': 'DeepSeek-R1',
     'deepseek-chat': 'DeepSeek-V3'
