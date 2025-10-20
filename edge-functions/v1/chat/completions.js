@@ -132,91 +132,95 @@ function generateId() {
 }
 
 /**
- * 处理流式响应（带缓冲区的 TransformStream）
+ * 处理流式响应（EdgeOne Pages SSE 方式）
  * @param {Response} upstreamResponse - 上游响应
  * @param {string} model - 模型名称
  * @returns {Response} 流式响应
  */
-function handleStreamResponse(upstreamResponse, model) {
-  let buffer = '';
-  const decoder = new TextDecoder();
+async function handleStreamResponse(upstreamResponse, model) {
+  const responseStream = new TransformStream();
+  const writer = responseStream.writable.getWriter();
   const encoder = new TextEncoder();
-
-  const { readable, writable } = new TransformStream({
-    transform(chunk, controller) {
-      // 解码并添加到缓冲区
-      buffer += decoder.decode(chunk, { stream: true });
-      
-      // 按行分割
-      const lines = buffer.split('\n');
-      
-      // 保留最后一个不完整的行
-      buffer = lines.pop() || '';
-      
-      // 处理完整的行
-      for (const line of lines) {
-        const trimmed = line.trim();
-        
-        // 跳过空行
-        if (!trimmed) {
-          controller.enqueue(encoder.encode('\n'));
-          continue;
-        }
-        
-        // 处理非 SSE 数据行
-        if (!trimmed.startsWith('data: ')) {
-          controller.enqueue(encoder.encode(line + '\n'));
-          continue;
-        }
-        
-        const data = trimmed.slice(6);
-        
-        // 处理 [DONE] 标记
-        if (data === '[DONE]') {
-          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
-          continue;
-        }
-
-        // 解析并转换 JSON 数据
-        try {
-          const parsed = JSON.parse(data);
-          const transformed = transformStreamChunk(parsed, model);
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify(transformed)}\n\n`));
-        } catch (e) {
-          // 解析失败，原样输出
-          controller.enqueue(encoder.encode(line + '\n'));
-        }
-      }
-    },
+  
+  // 异步处理上游流
+  (async () => {
+    const reader = upstreamResponse.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
     
-    flush(controller) {
-      // 处理缓冲区中剩余的数据
-      if (buffer.trim()) {
-        const trimmed = buffer.trim();
-        if (trimmed.startsWith('data: ')) {
-          const data = trimmed.slice(6);
-          if (data !== '[DONE]') {
-            try {
-              const parsed = JSON.parse(data);
-              const transformed = transformStreamChunk(parsed, model);
-              controller.enqueue(encoder.encode(`data: ${JSON.stringify(transformed)}\n\n`));
-            } catch (e) {
-              controller.enqueue(encoder.encode(buffer));
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        
+        if (done) {
+          // 处理缓冲区中剩余的数据
+          if (buffer.trim()) {
+            const trimmed = buffer.trim();
+            if (trimmed.startsWith('data: ')) {
+              const data = trimmed.slice(6);
+              if (data !== '[DONE]') {
+                try {
+                  const parsed = JSON.parse(data);
+                  const transformed = transformStreamChunk(parsed, model);
+                  await writer.write(encoder.encode(`data: ${JSON.stringify(transformed)}\n\n`));
+                } catch (e) {
+                  console.error('Parse error:', e);
+                }
+              }
             }
+          }
+          break;
+        }
+        
+        // 解码并添加到缓冲区
+        buffer += decoder.decode(value, { stream: true });
+        
+        // 按行分割
+        const lines = buffer.split('\n');
+        
+        // 保留最后一个不完整的行
+        buffer = lines.pop() || '';
+        
+        // 处理完整的行
+        for (const line of lines) {
+          const trimmed = line.trim();
+          
+          // 跳过空行
+          if (!trimmed) continue;
+          
+          // 处理非 SSE 数据行
+          if (!trimmed.startsWith('data: ')) continue;
+          
+          const data = trimmed.slice(6);
+          
+          // 处理 [DONE] 标记
+          if (data === '[DONE]') {
+            await writer.write(encoder.encode('data: [DONE]\n\n'));
+            continue;
+          }
+
+          // 解析并转换 JSON 数据
+          try {
+            const parsed = JSON.parse(data);
+            const transformed = transformStreamChunk(parsed, model);
+            await writer.write(encoder.encode(`data: ${JSON.stringify(transformed)}\n\n`));
+          } catch (e) {
+            console.error('Parse error for data:', data, e);
           }
         }
       }
+    } catch (error) {
+      console.error('Stream processing error:', error);
+    } finally {
+      await writer.close();
     }
-  });
+  })();
 
-  upstreamResponse.body.pipeTo(writable);
-
-  return new Response(readable, {
+  return new Response(responseStream.readable, {
     headers: {
       'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache, no-transform',
+      'Cache-Control': 'no-cache',
       'Connection': 'keep-alive',
-      'X-Accel-Buffering': 'no',
       ...makeCORSHeaders()
     }
   });
@@ -316,7 +320,7 @@ export default async function onRequest(context) {
 
     // 处理流式响应
     if (isStream) {
-      return handleStreamResponse(upstreamResponse, body.model);
+      return await handleStreamResponse(upstreamResponse, body.model);
     }
 
     // 处理非流式响应
