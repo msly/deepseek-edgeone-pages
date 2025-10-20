@@ -168,6 +168,8 @@ async function handleStreamResponse(upstreamResponse, model) {
               // 只发送一次结束标记，然后关闭流
               if (!controller.done) {
                 controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+                // 强制flush结束标记
+                await controller.flush?.();
                 controller.close();
               }
               return;
@@ -176,7 +178,10 @@ async function handleStreamResponse(upstreamResponse, model) {
             try {
               const parsed = JSON.parse(data);
               const transformed = transformStreamChunk(parsed, model);
-              controller.enqueue(encoder.encode(`data: ${JSON.stringify(transformed)}\n\n`));
+              const chunkData = encoder.encode(`data: ${JSON.stringify(transformed)}\n\n`);
+              controller.enqueue(chunkData);
+              // 强制立即flush每个chunk
+              await controller.flush?.();
             } catch (e) {
               console.error('Parse error:', e);
             }
@@ -191,8 +196,9 @@ async function handleStreamResponse(upstreamResponse, model) {
   return new Response(stream, {
     headers: {
       'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
+      'Cache-Control': 'no-cache, no-transform',
       'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no',  // 禁用Nginx缓冲
       ...makeCORSHeaders()
     }
   });
