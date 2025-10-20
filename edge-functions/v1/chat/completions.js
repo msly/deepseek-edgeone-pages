@@ -132,41 +132,78 @@ function generateId() {
 }
 
 /**
- * 处理流式响应（直接透传）
+ * 处理流式响应（带缓冲区的 TransformStream）
  * @param {Response} upstreamResponse - 上游响应
  * @param {string} model - 模型名称
  * @returns {Response} 流式响应
  */
 function handleStreamResponse(upstreamResponse, model) {
+  let buffer = '';
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+
   const { readable, writable } = new TransformStream({
     transform(chunk, controller) {
-      const decoder = new TextDecoder();
-      const encoder = new TextEncoder();
-      const text = decoder.decode(chunk, { stream: true });
+      // 解码并添加到缓冲区
+      buffer += decoder.decode(chunk, { stream: true });
       
-      // 按行处理
-      const lines = text.split('\n');
+      // 按行分割
+      const lines = buffer.split('\n');
+      
+      // 保留最后一个不完整的行
+      buffer = lines.pop() || '';
+      
+      // 处理完整的行
       for (const line of lines) {
         const trimmed = line.trim();
-        if (!trimmed || !trimmed.startsWith('data: ')) {
+        
+        // 跳过空行
+        if (!trimmed) {
+          controller.enqueue(encoder.encode('\n'));
+          continue;
+        }
+        
+        // 处理非 SSE 数据行
+        if (!trimmed.startsWith('data: ')) {
           controller.enqueue(encoder.encode(line + '\n'));
           continue;
         }
         
         const data = trimmed.slice(6);
         
+        // 处理 [DONE] 标记
         if (data === '[DONE]') {
           controller.enqueue(encoder.encode('data: [DONE]\n\n'));
           continue;
         }
 
+        // 解析并转换 JSON 数据
         try {
           const parsed = JSON.parse(data);
           const transformed = transformStreamChunk(parsed, model);
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(transformed)}\n\n`));
         } catch (e) {
-          // 如果解析失败，原样输出
+          // 解析失败，原样输出
           controller.enqueue(encoder.encode(line + '\n'));
+        }
+      }
+    },
+    
+    flush(controller) {
+      // 处理缓冲区中剩余的数据
+      if (buffer.trim()) {
+        const trimmed = buffer.trim();
+        if (trimmed.startsWith('data: ')) {
+          const data = trimmed.slice(6);
+          if (data !== '[DONE]') {
+            try {
+              const parsed = JSON.parse(data);
+              const transformed = transformStreamChunk(parsed, model);
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify(transformed)}\n\n`));
+            } catch (e) {
+              controller.enqueue(encoder.encode(buffer));
+            }
+          }
         }
       }
     }
