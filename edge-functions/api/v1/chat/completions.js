@@ -267,12 +267,44 @@ export default async function onRequest(context) {
     }
 
     // 处理非流式响应
-    const data = await upstreamResponse.json();
-    const transformedData = transformToOpenAIFormat(data, body.model);
+    const responseText = await upstreamResponse.text();
     
-    return new Response(JSON.stringify(transformedData), {
-      headers: { "Content-Type": "application/json", ...makeCORSHeaders() }
-    });
+    // 检查是否是流式响应格式
+    if (responseText.startsWith('data: ')) {
+      // 如果上游返回了流式格式，需要解析为JSON
+      const lines = responseText.split('\n');
+      let lastData = null;
+      
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith('data: ') && !trimmed.includes('[DONE]')) {
+          try {
+            const data = JSON.parse(trimmed.slice(6));
+            lastData = data;
+          } catch (e) {
+            console.error('Parse error:', e);
+          }
+        }
+      }
+      
+      if (lastData) {
+        const transformedData = transformToOpenAIFormat(lastData, body.model);
+        return new Response(JSON.stringify(transformedData), {
+          headers: { "Content-Type": "application/json", ...makeCORSHeaders() }
+        });
+      }
+    }
+    
+    // 尝试直接解析为JSON
+    try {
+      const data = JSON.parse(responseText);
+      const transformedData = transformToOpenAIFormat(data, body.model);
+      return new Response(JSON.stringify(transformedData), {
+        headers: { "Content-Type": "application/json", ...makeCORSHeaders() }
+      });
+    } catch (e) {
+      return errorResponse(`上游响应格式错误: ${responseText.substring(0, 200)}...`, 500, "api_error");
+    }
 
   } catch (error) {
     return errorResponse(`处理错误: ${error.message}`, 500, "internal_server_error");
