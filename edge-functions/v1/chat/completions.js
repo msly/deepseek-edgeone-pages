@@ -132,7 +132,7 @@ function generateId() {
 }
 
 /**
- * 处理流式响应
+ * 处理流式响应（优化版）
  * @param {Response} upstreamResponse - 上游响应
  * @param {string} model - 模型名称
  * @returns {Promise<Response>} 流式响应
@@ -141,40 +141,57 @@ async function handleStreamResponse(upstreamResponse, model) {
   const reader = upstreamResponse.body.getReader();
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
-  let buffer = '';
-  let chunkCount = 0;
-
-  console.log('Starting stream response handling...');
 
   const stream = new ReadableStream({
     async start(controller) {
+      let buffer = '';
+      
       try {
         while (true) {
           const { done, value } = await reader.read();
           
           if (done) {
-            console.log(`Stream ended, total chunks processed: ${chunkCount}`);
             // 处理缓冲区中剩余的数据
             if (buffer.trim()) {
-              console.log(`Processing remaining buffer: ${buffer}`);
-              await processBuffer(buffer, controller, encoder, model);
+              processBufferLines(buffer, controller, encoder, model);
             }
+            controller.close();
             break;
           }
 
-          // 立即解码新数据
-          const chunkText = decoder.decode(value, { stream: true });
-          console.log(`Received raw chunk: ${chunkText.length} bytes, content: "${chunkText}"`);
+          // 解码新数据并添加到缓冲区
+          buffer += decoder.decode(value, { stream: true });
           
-          buffer += chunkText;
+          // 按行分割并处理
+          const lines = buffer.split('\n');
           
-          // 立即处理缓冲区中的数据，不等待完整行
-          await processBuffer(buffer, controller, encoder, model);
+          // 保留最后一个不完整的行
+          buffer = lines.pop() || '';
           
-          // 保留未完成的部分
-          const lastNewlineIndex = buffer.lastIndexOf('\n');
-          if (lastNewlineIndex !== -1) {
-            buffer = buffer.substring(lastNewlineIndex + 1);
+          // 立即处理所有完整的行
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed || !trimmed.startsWith('data: ')) continue;
+            
+            const data = trimmed.slice(6);
+            
+            if (data === '[DONE]') {
+              controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+              controller.close();
+              return;
+            }
+
+            try {
+              const parsed = JSON.parse(data);
+              const transformed = transformStreamChunk(parsed, model);
+              const output = `data: ${JSON.stringify(transformed)}\n\n`;
+              
+              // 立即发送数据块
+              controller.enqueue(encoder.encode(output));
+              
+            } catch (e) {
+              console.error('Parse error for data:', data, e);
+            }
           }
         }
       } catch (error) {
@@ -187,58 +204,39 @@ async function handleStreamResponse(upstreamResponse, model) {
   return new Response(stream, {
     headers: {
       'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache, no-transform, must-revalidate',
+      'Cache-Control': 'no-cache, no-transform',
       'Connection': 'keep-alive',
       'X-Accel-Buffering': 'no',
-      'X-Content-Type-Options': 'nosniff',
       ...makeCORSHeaders()
     }
   });
 }
 
 /**
- * 处理缓冲区中的数据
+ * 处理缓冲区中剩余的行
  * @param {string} buffer - 缓冲区数据
  * @param {ReadableStreamDefaultController} controller - 流控制器
  * @param {TextEncoder} encoder - 编码器
  * @param {string} model - 模型名称
  */
-async function processBuffer(buffer, controller, encoder, model) {
+function processBufferLines(buffer, controller, encoder, model) {
   const lines = buffer.split('\n');
   
-  for (let i = 0; i < lines.length - 1; i++) { // 不处理最后一行，可能不完整
-    const line = lines[i].trim();
-    if (!line || !line.startsWith('data: ')) continue;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || !trimmed.startsWith('data: ')) continue;
     
-    const data = line.slice(6);
-    console.log(`Processing data line: "${data}"`);
-    
-    if (data === '[DONE]') {
-      console.log('Sending [DONE] marker');
-      controller.enqueue(encoder.encode('data: [DONE]\n\n'));
-      controller.close();
-      return true; // 表示流结束
-    }
+    const data = trimmed.slice(6);
+    if (data === '[DONE]') continue;
 
     try {
       const parsed = JSON.parse(data);
       const transformed = transformStreamChunk(parsed, model);
-      const chunkData = encoder.encode(`data: ${JSON.stringify(transformed)}\n\n`);
-      
-      controller.enqueue(chunkData);
-      console.log(`Enqueued chunk: "${transformed.choices[0].delta.content}"`);
-      
-      // 尝试flush，但不等待
-      if (controller.flush) {
-        controller.flush().catch(e => console.log('Flush failed:', e));
-      }
-      
+      controller.enqueue(encoder.encode(`data: ${JSON.stringify(transformed)}\n\n`));
     } catch (e) {
-      console.error('Parse error for data:', data, e);
+      console.error('Parse error:', e);
     }
   }
-  
-  return false; // 流未结束
 }
 
 /**
