@@ -122,7 +122,7 @@
                 responseDiv.className = 'response';
                 responseDiv.textContent = '正在获取模型列表...';
                 
-                const response = await fetch(`${baseUrl}/api/v1/models`, {
+                const response = await fetch(`${baseUrl}/v1/models`, {
                     headers: {
                         'Authorization': `Bearer ${apiKey}`,
                         'Content-Type': 'application/json'
@@ -155,7 +155,7 @@
                 responseDiv.className = 'response';
                 responseDiv.textContent = '正在发送消息...';
                 
-                const response = await fetch(`${baseUrl}/api/v1/chat/completions`, {
+                const response = await fetch(`${baseUrl}/v1/chat/completions`, {
                     method: 'POST',
                     headers: {
                         'Authorization': `Bearer ${apiKey}`,

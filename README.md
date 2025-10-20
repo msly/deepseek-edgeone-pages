@@ -20,8 +20,8 @@
 **问题**: 原始只有一个 `openai-edgeone-adapter.js` 文件，路由不匹配
 **修复**: 创建标准的 OpenAI API 路由结构
 ```
-edge-functions/api/v1/models.js           # GET /api/v1/models
-edge-functions/api/v1/chat/completions.js # POST /api/v1/chat/completions
+edge-functions/v1/models.js           # GET /v1/models
+edge-functions/v1/chat/completions.js # POST /v1/chat/completions
 ```
 
 #### 3. 前端页面添加
@@ -56,13 +56,13 @@ deepseek-edgeone-pages/
 
 ### 获取模型列表
 ```
-GET /api/v1/models
+GET /v1/models
 Authorization: Bearer YOUR_API_KEY
 ```
 
 ### 聊天补全
 ```
-POST /api/v1/chat/completions
+POST /v1/chat/completions
 Authorization: Bearer YOUR_API_KEY
 Content-Type: application/json
 

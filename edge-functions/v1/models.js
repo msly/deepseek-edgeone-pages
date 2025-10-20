@@ -1,5 +1,5 @@
 /**
- * EdgeOne Pages Edge Function for /api/v1/models
+ * EdgeOne Pages Edge Function for /v1/models
  * 处理模型列表请求
  */
 
@@ -85,7 +85,7 @@ function verifyApiKey(context) {
 }
 
 /**
- * 处理 /api/v1/models 请求
+ * 处理 /v1/models 请求
  * @param {Object} context - EdgeOne Pages 上下文对象
  * @returns {Promise<Response>} HTTP 响应
  */

@@ -1,11 +1,11 @@
 /**
- * EdgeOne Pages Edge Function for /api/v1/chat/completions
+ * EdgeOne Pages Edge Function for /v1/chat/completions
  * 处理聊天补全请求
  */
 
 // 配置
 const CONFIG = {
-  UPSTREAM_API: 'https://ai-chatbot-starter.edgeone.app/api/ai',
+  UPSTREAM_API: 'https://ai-chatbot-starter.edgeone.app/ai',
   MODEL_MAPPING: {
     'deepseek-reasoner': 'DeepSeek-R1',
     'deepseek-chat': 'DeepSeek-V3'
@@ -197,7 +197,7 @@ async function handleStreamResponse(upstreamResponse, model) {
 }
 
 /**
- * 处理 /api/v1/chat/completions 请求
+ * 处理 /v1/chat/completions 请求
  * @param {Object} context - EdgeOne Pages 上下文对象
  * @returns {Promise<Response>} HTTP 响应
  */
