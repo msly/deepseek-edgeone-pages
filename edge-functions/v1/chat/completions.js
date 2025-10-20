@@ -223,7 +223,30 @@ export default async function onRequest(context) {
       ...(body.stream !== undefined && { stream: body.stream })
     };
 
-    // 发送请求到上游
+    // 对于流式请求，立即发起 fetch 并返回流，不等待完成
+    if (isStream) {
+      const upstreamResponse = await fetch(CONFIG.UPSTREAM_API, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': '*/*',
+          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+          'Origin': 'https://ai-chatbot-starter.edgeone.app',
+          'Referer': 'https://ai-chatbot-starter.edgeone.app/'
+        },
+        body: JSON.stringify(upstreamBody)
+      });
+
+      if (!upstreamResponse.ok) {
+        const errorText = await upstreamResponse.text();
+        return errorResponse(`Upstream API error: ${errorText}`, upstreamResponse.status, "api_error");
+      }
+
+      // 立即返回流式响应
+      return handleStreamResponse(upstreamResponse, body.model);
+    }
+
+    // 处理非流式响应
     const upstreamResponse = await fetch(CONFIG.UPSTREAM_API, {
       method: 'POST',
       headers: {
@@ -241,12 +264,6 @@ export default async function onRequest(context) {
       return errorResponse(`Upstream API error: ${errorText}`, upstreamResponse.status, "api_error");
     }
 
-    // 处理流式响应
-    if (isStream) {
-      return handleStreamResponse(upstreamResponse, body.model);
-    }
-
-    // 处理非流式响应
     const responseText = await upstreamResponse.text();
     
     // 检查是否是流式响应格式
