@@ -101,13 +101,32 @@ function transformToOpenAIFormat(data, model) {
 
 
 /**
- * 处理流式响应 - 直接透传
+ * 处理流式响应
  * @param {Response} upstreamResponse - 上游响应
- * @param {string} model - 模型名称
+ * @param {Object} context - EdgeOne Pages 上下文
  * @returns {Response} 流式响应
  */
-function handleStreamResponse(upstreamResponse, model) {
-  return new Response(upstreamResponse.body, {
+function handleStreamResponse(upstreamResponse, context) {
+  const responseStream = new TransformStream();
+  const writer = responseStream.writable.getWriter();
+  const encoder = new TextEncoder();
+
+  context.waitUntil(
+    (async () => {
+      const reader = upstreamResponse.body.getReader();
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          await writer.write(value);
+        }
+      } finally {
+        await writer.close();
+      }
+    })()
+  );
+
+  return new Response(responseStream.readable, {
     headers: {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
@@ -185,7 +204,7 @@ export default async function onRequest(context) {
       }
 
       // 立即返回流式响应
-      return handleStreamResponse(upstreamResponse, body.model);
+      return handleStreamResponse(upstreamResponse, context);
     }
 
     // 处理非流式响应
