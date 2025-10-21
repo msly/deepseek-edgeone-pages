@@ -79,7 +79,7 @@ function verifyApiKey(context) {
  */
 function transformToOpenAIFormat(data, model) {
   return {
-    id: data.id || `chatcmpl-${generateId()}`,
+    id: data.id || `chatcmpl-${Math.random().toString(36).substring(2, 15)}`,
     object: 'chat.completion',
     created: Math.floor(Date.now() / 1000),
     model: model,
@@ -99,129 +99,15 @@ function transformToOpenAIFormat(data, model) {
   };
 }
 
-/**
- * 转换流式响应块
- * @param {Object} chunk - 流式响应块
- * @param {string} model - 模型名称
- * @returns {Object} OpenAI 格式流式响应块
- */
-function transformStreamChunk(chunk, model) {
-  return {
-    id: chunk.id || `chatcmpl-${generateId()}`,
-    object: 'chat.completion.chunk',
-    created: Math.floor(Date.now() / 1000),
-    model: model,
-    choices: [{
-      index: 0,
-      delta: {
-        ...(chunk.choices?.[0]?.delta || {}),
-        content: chunk.choices?.[0]?.delta?.content || ''
-      },
-      finish_reason: chunk.choices?.[0]?.finish_reason || null
-    }]
-  };
-}
 
 /**
- * 生成唯一ID
- * @returns {string} 唯一ID
- */
-function generateId() {
-  return Math.random().toString(36).substring(2, 15) + 
-         Math.random().toString(36).substring(2, 15);
-}
-
-/**
- * 处理流式响应（简化版 - 不使用 waitUntil）
+ * 处理流式响应 - 直接透传
  * @param {Response} upstreamResponse - 上游响应
  * @param {string} model - 模型名称
  * @returns {Response} 流式响应
  */
 function handleStreamResponse(upstreamResponse, model) {
-  const responseStream = new TransformStream();
-  const writer = responseStream.writable.getWriter();
-  const encoder = new TextEncoder();
-  
-  // 立即启动异步处理（不使用 waitUntil）
-  (async () => {
-    const reader = upstreamResponse.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        
-        if (done) {
-          // 处理缓冲区中剩余的数据
-          if (buffer.trim()) {
-            const trimmed = buffer.trim();
-            if (trimmed.startsWith('data: ')) {
-              const data = trimmed.slice(6);
-              if (data !== '[DONE]') {
-                try {
-                  const parsed = JSON.parse(data);
-                  const transformed = transformStreamChunk(parsed, model);
-                  await writer.write(encoder.encode(`data: ${JSON.stringify(transformed)}\n\n`));
-                } catch (e) {
-                  console.error('Parse error:', e);
-                }
-              }
-            }
-          }
-          break;
-        }
-        
-        // 解码并添加到缓冲区
-        buffer += decoder.decode(value, { stream: true });
-        
-        // 按行分割
-        const lines = buffer.split('\n');
-        
-        // 保留最后一个不完整的行
-        buffer = lines.pop() || '';
-        
-        // 处理完整的行
-        for (const line of lines) {
-          const trimmed = line.trim();
-          
-          // 跳过空行
-          if (!trimmed) continue;
-          
-          // 处理非 SSE 数据行
-          if (!trimmed.startsWith('data: ')) continue;
-          
-          const data = trimmed.slice(6);
-          
-          // 处理 [DONE] 标记
-          if (data === '[DONE]') {
-            await writer.write(encoder.encode('data: [DONE]\n\n'));
-            continue;
-          }
-
-          // 解析并转换 JSON 数据
-          try {
-            const parsed = JSON.parse(data);
-            const transformed = transformStreamChunk(parsed, model);
-            await writer.write(encoder.encode(`data: ${JSON.stringify(transformed)}\n\n`));
-          } catch (e) {
-            console.error('Parse error for data:', data, e);
-          }
-        }
-      }
-    } catch (error) {
-      console.error('Stream processing error:', error);
-    } finally {
-      try {
-        await writer.close();
-      } catch (e) {
-        // Writer may already be closed
-      }
-    }
-  })();
-  
-  // 立即返回响应
-  return new Response(responseStream.readable, {
+  return new Response(upstreamResponse.body, {
     headers: {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
@@ -231,32 +117,6 @@ function handleStreamResponse(upstreamResponse, model) {
   });
 }
 
-/**
- * 处理缓冲区中剩余的行
- * @param {string} buffer - 缓冲区数据
- * @param {ReadableStreamDefaultController} controller - 流控制器
- * @param {TextEncoder} encoder - 编码器
- * @param {string} model - 模型名称
- */
-function processBufferLines(buffer, controller, encoder, model) {
-  const lines = buffer.split('\n');
-  
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed || !trimmed.startsWith('data: ')) continue;
-    
-    const data = trimmed.slice(6);
-    if (data === '[DONE]') continue;
-
-    try {
-      const parsed = JSON.parse(data);
-      const transformed = transformStreamChunk(parsed, model);
-      controller.enqueue(encoder.encode(`data: ${JSON.stringify(transformed)}\n\n`));
-    } catch (e) {
-      console.error('Parse error:', e);
-    }
-  }
-}
 
 /**
  * 处理 /v1/chat/completions 请求
